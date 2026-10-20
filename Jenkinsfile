@@ -1,0 +1,76 @@
+pipeline {
+    agent any
+
+    options {
+        timestamps()
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        IMAGE_NAME = 'devops-demo'
+    }
+
+    stages {
+        stage('Checkout') {
+            steps {
+                checkout scm
+            }
+        }
+
+        stage('Validate Tools') {
+            steps {
+                sh 'git --version'
+                sh 'java -version'
+                sh 'mvn -version'
+                sh 'docker version'
+            }
+        }
+
+        stage('Build and Unit Test') {
+            steps {
+                sh 'mvn -B clean verify'
+            }
+        }
+
+        stage('Build Docker Image') {
+            steps {
+                sh 'docker build -t ${IMAGE_NAME}:${BUILD_NUMBER} .'
+                sh 'docker tag ${IMAGE_NAME}:${BUILD_NUMBER} ${IMAGE_NAME}:latest'
+            }
+        }
+
+        stage('Container Smoke Test') {
+            steps {
+                sh '''
+                    set -eu
+
+                    NAME="devops-smoke-${BUILD_NUMBER}"
+                    trap 'docker rm -f "$NAME" >/dev/null 2>&1 || true' EXIT
+
+                    docker run -d --name "$NAME" \
+                        -p 127.0.0.1::8080 \
+                        "${IMAGE_NAME}:${BUILD_NUMBER}"
+
+                    for i in $(seq 1 20); do
+                        if docker logs "$NAME" 2>&1 | grep -q "listening on port 8080"; then
+                            break
+                        fi
+                        sleep 1
+                    done
+
+                    docker logs "$NAME" 2>&1 | grep "listening on port 8080"
+                    test "$(docker inspect -f '{{.State.Running}}' "$NAME")" = "true"
+                '''
+            }
+        }
+    }
+
+    post {
+        success {
+            echo 'SUCCESS: Maven tests passed and Docker image was built.'
+        }
+        failure {
+            echo 'FAILED: Review the stage logs and correct the reported error.'
+        }
+    }
+}
